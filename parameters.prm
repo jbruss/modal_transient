@@ -1,0 +1,12 @@
+# Listing of Parameters
+# ---------------------
+set Number of eigenvalues/eigenvectors 	= 7
+set Negative Shift = -1.0e6
+set Shift frequency = 1
+set Mass Normalize Eigenvectors = true
+set Write Restart = true
+set Fix Boundary = false
+set Boundary to Fix = 1
+set Run Static Solution = false
+set Static Force Boundary = 2
+set Static Force Magnitude = 1
