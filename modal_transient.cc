@@ -1,6 +1,7 @@
 /* ---------------------------------------------------------------------
- * Modified by Jonathan B. Russ to read in Abaqus mesh from file and perform
- *    eigen-analysis in parallel using SLEPc and PETSc for linear algebra
+ * Modified by Jonathan B. Russ to read in Abaqus mesh from file and
+ * perform a modal transient solution in parallel using SLEPc and PETSc
+ * for linear algebra.
  * ---------------------------------------------------------------------
  */
 #include <deal.II/base/logstream.h>
@@ -130,7 +131,7 @@ namespace ModalAnalysis
 		return density_values[mat_id];
 	}
 
-	// ********************** RUNGE KUTTA TIME INTEGRATION CLASS **********************
+	// ********************** RUNGE KUTTA 4TH ORDER TIME INTEGRATION CLASS **********************
 	class RungeKutta
 	{
 		unsigned int num_time_steps;
@@ -212,8 +213,8 @@ namespace ModalAnalysis
 
 	class NewmarkBetaIntegrator
 	{
-		const double time_step, wn, force_scale_factor;
 		const unsigned int num_steps;
+		const double time_step, wn, force_scale_factor;
 		unsigned int step;
 		double prev_disp, prev_veloc, prev_accel, beta, gamma, a1, a2, a3;
 		std::vector<double> input_accel_values;
@@ -294,7 +295,7 @@ namespace ModalAnalysis
 			unsigned int
 			solve_static ();
 			unsigned int
-			solve_eigen ();
+			solve_eigen_parallel ();
 			void
 			output_modes_partition_static_solution () const;
 			void
@@ -326,7 +327,7 @@ namespace ModalAnalysis
 			PETScWrappers::MPI::SparseMatrix stiffness_matrix;
 			PETScWrappers::MPI::SparseMatrix mass_matrix;
 			PETScWrappers::MPI::SparseMatrix dynamic_matrix;
-			PETScWrappers::MPI::SparseMatrix strain_energy_matrix;
+
 			double shift;
 			PETScWrappers::MPI::Vector force_vector, static_solution, current_solution;
 			std::vector<PETScWrappers::MPI::Vector> eigenvectors;
@@ -370,8 +371,6 @@ namespace ModalAnalysis
 																"The sideset to apply the force to. (boundary_id)");
 			parameters.declare_entry ("Static Force Magnitude", "1.0", Patterns::Double (1.0, 1.0e7),
 																"First modal frequency guess for the shift in the eigen-solver.");
-			parameters.declare_entry ("Strain Energy Material ID", "2", Patterns::Integer (0, 1000),
-																"The material id with which to compute the strain energy.");
 			parameters.read_input (prm_file);
 			if (this_mpi_process == 0)
 			{
@@ -419,10 +418,10 @@ namespace ModalAnalysis
 			force_vector.reinit (locally_owned_dofs, mpi_communicator);
 			static_solution.reinit (locally_owned_dofs, mpi_communicator);
 			current_solution.reinit (locally_owned_dofs, mpi_communicator);
+
 			stiffness_matrix.reinit (locally_owned_dofs, locally_owned_dofs, dsp, mpi_communicator);
 			mass_matrix.reinit (locally_owned_dofs, locally_owned_dofs, dsp, mpi_communicator);
 			dynamic_matrix.reinit (locally_owned_dofs, locally_owned_dofs, dsp, mpi_communicator);
-			strain_energy_matrix.reinit (locally_owned_dofs, locally_owned_dofs, dsp, mpi_communicator);
 
 			eigenvalues.resize (eigenvectors.size ());
 		}
@@ -441,9 +440,6 @@ namespace ModalAnalysis
 
 			const unsigned int dofs_per_cell = fe.dofs_per_cell;
 			const unsigned int n_q_points = quadrature_formula.size ();
-
-			const unsigned int strain_energy_material_id = parameters.get_integer (
-					"Strain Energy Material ID");
 
 			FullMatrix<double> cell_stiffness_matrix (dofs_per_cell, dofs_per_cell);
 			FullMatrix<double> cell_mass_matrix (dofs_per_cell, dofs_per_cell);
@@ -509,19 +505,12 @@ namespace ModalAnalysis
 					}
 					constraints.distribute_local_to_global (cell_dynamic_matrix, local_dof_indices,
 																									dynamic_matrix);
-
-					if (cell->material_id () == strain_energy_material_id)
-					{
-						constraints.distribute_local_to_global (cell_stiffness_matrix, local_dof_indices,
-																										strain_energy_matrix);
-					}
 				}
 			}
 
 			stiffness_matrix.compress (VectorOperation::add);
 			mass_matrix.compress (VectorOperation::add);
 			dynamic_matrix.compress (VectorOperation::add);
-			strain_energy_matrix.compress (VectorOperation::add);
 
 			// Before leaving the function, we calculate spurious eigenvalues,
 			// introduced to the system by zero Dirichlet constraints. As
@@ -532,8 +521,8 @@ namespace ModalAnalysis
 			// Below, we output the interval within which they all lie to
 			// ensure that we can ignore them should they show up in our
 			// computations.
-			double min_spurious_eigenvalue = std::numeric_limits<double>::max (),
-					max_spurious_eigenvalue = -std::numeric_limits<double>::max ();
+			double min_spurious_eigenvalue =  std::numeric_limits<double>::max ();
+			double max_spurious_eigenvalue = -std::numeric_limits<double>::max ();
 
 			double dynamic_ii, mass_ii, ev;
 			std::pair<PETScWrappers::MatrixBase::size_type, PETScWrappers::MatrixBase::size_type> range;
@@ -605,9 +594,9 @@ namespace ModalAnalysis
 
 	template<int dim>
 		unsigned int
-		EigenvalueProblem<dim>::solve_eigen ()
+		EigenvalueProblem<dim>::solve_eigen_parallel ()
 		{
-			TimerOutput::Scope t (computing_timer, "solve_eigen");
+			TimerOutput::Scope t (computing_timer, "solve_eigen_parallel");
 			pcout << "   Number of eigenpairs requested: " << eigenvalues.size () << std::endl;
 
 			PETScWrappers::PreconditionBlockJacobi::AdditionalData data;
@@ -721,7 +710,7 @@ namespace ModalAnalysis
 																data_component_interpretation);
 			data_out.build_patches ();
 
-			const std::string filename = "solution-" + Utilities::int_to_string (time_step, 4);
+			const std::string filename = "transient-" + Utilities::int_to_string (time_step, 4);
 
 			std::ofstream output (
 					(filename + "." + Utilities::int_to_string (this_mpi_process, 2) + ".vtu").c_str ());
@@ -734,7 +723,7 @@ namespace ModalAnalysis
 				std::vector<std::string> filenames;
 				for (unsigned int i = 0; i < n_mpi_processes; ++i)
 					filenames.push_back (
-							"solution-" + Utilities::int_to_string (time_step, 4) + "."
+							"transient-" + Utilities::int_to_string (time_step, 4) + "."
 									+ Utilities::int_to_string (i, 2) + ".vtu");
 				std::ofstream master_output ((filename + ".pvtu").c_str ());
 				data_out.write_pvtu_record (master_output, filenames);
@@ -776,7 +765,7 @@ namespace ModalAnalysis
 				std::ifstream eigenvector_input (filename.c_str (), std::ifstream::in);
 
 				std::string str;
-				// The first 3 parts of the file are [Proc 1 15806-31739] (example)... These are not needed
+				// The first 3 parts of the file are [Proc 1 15806-31739] (<- example)... These are not needed
 				eigenvector_input >> str;
 				eigenvector_input >> str;
 				eigenvector_input >> str;
@@ -784,11 +773,11 @@ namespace ModalAnalysis
 				// Get the starting DoF and ending DoF that this processor owns
 				std::pair<PETScWrappers::VectorBase::size_type, PETScWrappers::VectorBase::size_type> locally_owned_range =
 						eigenvectors[i].local_range ();
-				unsigned int start = locally_owned_range.first;
-				unsigned int end = locally_owned_range.second;
+				unsigned int first_dof = locally_owned_range.first;
+				unsigned int last_dof = locally_owned_range.second;
 				double current_value;
-				unsigned int current_dof = start;
-				while (current_dof != end + 1)
+				unsigned int current_dof = first_dof;
+				while (current_dof != last_dof + 1)
 				{
 					eigenvector_input >> current_value;
 					eigenvectors[i][current_dof] = current_value;
@@ -865,25 +854,32 @@ namespace ModalAnalysis
 						/ n_mpi_processes - 1;
 				for (unsigned int mode_number = 0; mode_number < total_number_of_modes; ++mode_number)
 				{
-					if (mode_number >= current_processor_first_mode_owned && mode_number <= current_processor_last_mode_owned)
+					if (mode_number >= current_processor_first_mode_owned
+							&& mode_number <= current_processor_last_mode_owned)
 						owning_processor[mode_number] = processor;
 				}
 			}
-			MPI_Barrier (mpi_communicator);
-			// Uncomment the following lines to print out the modal displacement matrices
-//			std::string modal_disp_file_name = "modal_disp_matrix_" + Utilities::int_to_string (this_mpi_process, 1) + ".dat";
-//			std::ofstream matrix_output (modal_disp_file_name, std::ofstream::out);
-//			for (unsigned int mode_number = 0; mode_number < num_modes_locally_owned; ++mode_number)
-//			{
-//				for (unsigned int time_step = 0; time_step < num_time_steps; ++time_step)
-//				{
-//					matrix_output << modal_displacements[mode_number][time_step] << " ";
-//				}
-//				matrix_output << std::endl;
-//			}
-//			matrix_output.close();
 
-			pcout << "   Modal Displacements Finished Computing." << std::endl << std::endl;
+			// Print out the modal displacement matrices
+			const bool print_modal_displacements = false;
+			if (print_modal_displacements)
+			{
+				std::string modal_disp_file_name = "modal_disp_matrix_"
+						+ Utilities::int_to_string (this_mpi_process, 1) + ".dat";
+				std::ofstream matrix_output (modal_disp_file_name, std::ofstream::out);
+				for (unsigned int mode_number = 0; mode_number < num_modes_locally_owned; ++mode_number)
+				{
+					for (unsigned int time_step = 0; time_step < num_time_steps; ++time_step)
+					{
+						matrix_output << modal_displacements[mode_number][time_step] << " ";
+					}
+					matrix_output << std::endl;
+				}
+				matrix_output.close ();
+			}
+			MPI_Barrier (mpi_communicator);
+			pcout << "   Finished Computing Modal Displacements." << std::endl << std::endl;
+
 			// Now we step in time and construct the solution vector, which we output at the required frequency
 			const unsigned int nskip = 1000;
 			double current_modal_displacement[1];
@@ -896,15 +892,14 @@ namespace ModalAnalysis
 					// Figure out who owns the modal displacement value and broadcast it to everyone
 					if (this_mpi_process == owning_processor[mode_number])
 					{
-						current_modal_displacement[0] = modal_displacements[mode_number - first_mode_locally_owned][step];
+						current_modal_displacement[0] = modal_displacements[mode_number
+								- first_mode_locally_owned][step];
 					}
-					//MPI_Barrier (mpi_communicator);
 					MPI_Bcast (current_modal_displacement, 1, MPI_DOUBLE, owning_processor[mode_number],
 											mpi_communicator);
-					//printf("Proc %d , Mode %d : %f\n", this_mpi_process, mode_number, current_modal_displacement[0]);
 					current_solution.add (current_modal_displacement[0], eigenvectors[mode_number]);
 				}
-				// Need to output the solution vector for this time step
+				// Output the solution vector for this time step
 				output_time_step_solution (output_step_number);
 				++output_step_number;
 			}
@@ -934,7 +929,7 @@ namespace ModalAnalysis
 			// Either solve the Eigenvalue problem again or read in previously computed eigenpairs
 			if (write_restart)
 			{
-				unsigned int n_iterations = solve_eigen ();
+				unsigned int n_iterations = solve_eigen_parallel ();
 				pcout << "   Eigensolver converged in " << n_iterations << " iterations." << std::endl;
 
 				write_Eigen_Restart ();
@@ -946,14 +941,16 @@ namespace ModalAnalysis
 			}
 			pcout << std::endl;
 
-			// Print out the Modal Frequencies to the console
-			for (unsigned int i = 0; i < eigenvalues.size (); ++i)
+			// Print the Modal Frequencies to the console
+			if (this_mpi_process == 0)
 			{
-				if (this_mpi_process == 0)
+				for (unsigned int i = 0; i < eigenvalues.size (); ++i)
+				{
 					printf ("   Mode %d Frequency : %0.3f Hz\n", i + 1,
 									sqrt (std::abs (eigenvalues[i] + shift)) / (2 * PI));
+				}
+				std::cout << std::endl;
 			}
-			pcout << std::endl;
 
 			// If the user requested a static solution and specified a boundary to fix
 			// (required for a unique solution) then run the static solve.
@@ -977,8 +974,10 @@ namespace ModalAnalysis
 				assemble_force_vector ();
 			}
 
-			// Now compute the solution of the modal equation of each mode
-			// 	that was computed in the eigensolve.
+			/* Now compute the solution of the modal equation of each mode
+			 that was computed in the eigensolve and sum the contribution
+			 of each mode for every time step. We also output the results
+			 in this function. */
 			compute_transient_solution ();
 
 			char buf[128];
