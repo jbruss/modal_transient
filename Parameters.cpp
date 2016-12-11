@@ -97,7 +97,7 @@ Parameters::declare_parameters ()
 		parameters.declare_entry ("force_scale", "1.0", Patterns::Double (-1.0e10, 1.0e10),
 															"Scale factor for the force.");
 		parameters.declare_entry ("output_filename", "static", Patterns::Anything (),
-															"Root of the output file name for the transient run.");
+															"Root of the output file name for the statics run.");
 	}
 	parameters.leave_subsection();
 

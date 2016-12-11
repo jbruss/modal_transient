@@ -67,45 +67,45 @@ namespace ModalAnalysis
 	using namespace dealii;
 
 	// ********************** RUNGE KUTTA 4TH ORDER TIME INTEGRATION CLASS **********************
-	class RungeKutta
+	class RungeKuttaIntegrator
 	{
-		unsigned int num_time_steps;
-		unsigned int current_time_step;
-		const double time_increment;
-		std::vector<double> modal_force_values;
-		const double force_scale_factor;
+		unsigned int current_step_number;
+		unsigned int num_steps;
+		const double time_step;
 		const double wn;
+		const double force_scale_factor, damping;
+		std::vector<double> modal_force_values;
 		double k1d, k1v, k2d, k2v, k3d, k3v, k4d, k4v, ft, ft_dt, ft_average;
+		double prev_disp, prev_veloc;
 		void
-		initialize_modal_force ();
+		initialize_input_force (const std::string force_filename);
 	public:
-		RungeKutta (const unsigned int n_time_steps, const double dt, const double wn,
-								const double force_scale);
+		RungeKuttaIntegrator (const unsigned int n_time_steps, const double dt, const double wn,
+								const double force_scale, const double damping, const std::string force_filename);
 		void
-		update_step (const double prev_disp, const double prev_veloc, const double gamma,
-									double &current_disp, double &current_veloc);
+		update_step (double &new_disp, double &new_veloc, double &new_accel);
 	};
 
-	RungeKutta::RungeKutta (const unsigned int n_time_steps, const double dt, const double wn,
-													const double force_scale) :
-			num_time_steps (n_time_steps), time_increment (dt), force_scale_factor (force_scale), wn (wn)
+	RungeKuttaIntegrator::RungeKuttaIntegrator (const unsigned int n_time_steps, const double dt, const double wn,
+													const double force_scale, const double damping, const std::string force_filename) :
+			num_steps (n_time_steps), time_step (dt), wn (wn), force_scale_factor (force_scale), damping (damping)
 	{
 		// This is the only constructor available for this class.
 		// The number of time steps, time increment, natural frequency, and force scale factor (mode' * force_vector)
 		// 		must be specified.
-		initialize_modal_force ();
-		current_time_step = 0;
+		initialize_input_force (force_filename);
+		current_step_number = 0;
 	}
 
 	void
-	RungeKutta::initialize_modal_force ()
+	RungeKuttaIntegrator::initialize_input_force (const std::string force_filename)
 	{
-		// Read in the force from file "force.dat" - it must have dt = time_increment in the constructor!
-		modal_force_values.resize (num_time_steps + 1, 0.0);
-		std::ifstream force_input_file ("force.dat", std::ifstream::in);
+		// Read in the force from file force_filename - it must have dt = time_increment in the constructor!
+		modal_force_values.resize (num_steps + 1, 0.0);
+		std::ifstream force_input_file (force_filename, std::ifstream::in);
 		double current_value;
 		unsigned int i = 0;
-		while ((!force_input_file.eof ()) && (i != num_time_steps + 1))
+		while ((!force_input_file.eof ()) && (i != num_steps + 1))
 		{
 			force_input_file >> current_value;
 			modal_force_values[i] = force_scale_factor * current_value;
@@ -115,33 +115,36 @@ namespace ModalAnalysis
 	}
 
 	void
-	RungeKutta::update_step (const double prev_disp, const double prev_veloc, const double gamma,
-														double &current_disp, double &current_veloc)
+	RungeKuttaIntegrator::update_step (double &new_disp, double &new_veloc, double &new_accel)
 	{
-		ft = modal_force_values[current_time_step];
-		ft_dt = modal_force_values[current_time_step + 1];
+		// new_accel is never used but is kept to maintain a consistent method signature
+		// 	with the NewmarkBeta integration class!
+		ft = modal_force_values[current_step_number];
+		ft_dt = modal_force_values[current_step_number + 1];
 		ft_average = (ft + ft_dt) / 2.0;
 
-		k1d = time_increment * prev_veloc;
-		k1v = time_increment * (ft - 2 * gamma * wn * prev_veloc - (wn * wn) * prev_disp);
+		k1d = time_step * prev_veloc;
+		k1v = time_step * (ft - 2 * damping * wn * prev_veloc - (wn * wn) * prev_disp);
 
-		k2d = time_increment * (prev_veloc + 0.5 * k1v);
-		k2v = time_increment
-				* (ft_average - 2 * gamma * wn * (prev_veloc + 0.5 * k1v)
+		k2d = time_step * (prev_veloc + 0.5 * k1v);
+		k2v = time_step
+				* (ft_average - 2 * damping * wn * (prev_veloc + 0.5 * k1v)
 						- (wn * wn) * (prev_disp + 0.5 * k1d));
 
-		k3d = time_increment * (prev_veloc + 0.5 * k2v);
-		k3v = time_increment
-				* (ft_average - 2 * gamma * wn * (prev_veloc + 0.5 * k2v)
+		k3d = time_step * (prev_veloc + 0.5 * k2v);
+		k3v = time_step
+				* (ft_average - 2 * damping * wn * (prev_veloc + 0.5 * k2v)
 						- (wn * wn) * (prev_disp + 0.5 * k2d));
 
-		k4d = time_increment * (prev_veloc + k3v);
-		k4v = time_increment
-				* (ft_dt - 2 * gamma * wn * (prev_veloc + k3v) - (wn * wn) * (prev_disp + k3d));
+		k4d = time_step * (prev_veloc + k3v);
+		k4v = time_step
+				* (ft_dt - 2 * damping * wn * (prev_veloc + k3v) - (wn * wn) * (prev_disp + k3d));
 
-		current_disp = prev_disp + (k1d + 2 * k2d + 2 * k3d + k4d) / 6.0;
-		current_veloc = prev_veloc + (k1v + 2 * k2v + 2 * k3v + k4v) / 6.0;
-		++current_time_step;
+		new_disp = prev_disp + (k1d + 2 * k2d + 2 * k3d + k4d) / 6.0;
+		new_veloc = prev_veloc + (k1v + 2 * k2v + 2 * k3v + k4v) / 6.0;
+		prev_disp = new_disp;
+		prev_veloc = new_veloc;
+		++current_step_number;
 	}
 
 	// ********************** NEWMARK BETA TIME INTEGRATION CLASS **********************
@@ -149,48 +152,50 @@ namespace ModalAnalysis
 	class NewmarkBetaIntegrator
 	{
 		const unsigned int num_steps;
-		const double time_step, wn, force_scale_factor;
-		unsigned int step;
-		double prev_disp, prev_veloc, prev_accel, beta, gamma, a1, a2, a3;
-		std::vector<double> input_accel_values;
+		const double time_step, wn;
+		unsigned int current_step_number;
+		double prev_disp, prev_veloc, prev_accel, nb_gamma, nb_beta, a1, a2, a3;
+		const double force_scale_factor;
+		std::vector<double> modal_force_values;
 		void
-		initialize_input_accel ();
+		initialize_input_force (const std::string force_filename);
 	public:
 		NewmarkBetaIntegrator (const unsigned int num_steps, const double time_step, const double wn,
-														const double force_scale, const double damp);
+														const double force_scale, const double damping, const std::string force_filename);
 		void
 		update_step (double &new_disp, double &new_veloc, double &new_accel);
 	};
 
 	NewmarkBetaIntegrator::NewmarkBetaIntegrator (const unsigned int num_steps,
 																								const double time_step, const double wn,
-																								const double force_scale, const double damp) :
+																								const double force_scale, const double damping,
+																								const std::string force_filename) :
 			num_steps (num_steps), time_step (time_step), wn (wn), force_scale_factor (force_scale)
 	{
-		initialize_input_accel ();
+		initialize_input_force (force_filename);
 		prev_disp = 0.0;
 		prev_veloc = 0.0;
-		prev_accel = input_accel_values[0];
-		gamma = 0.5;
-		beta = 1.0 / 6.0;
-		a1 = 1 / (beta * pow (time_step, 2)) + (gamma * 2 * damp * wn) / (beta * time_step);
-		a2 = 1 / (beta * time_step) + (gamma / beta - 1) * (2 * damp * wn);
-		a3 = (1 / (2 * beta) - 1) + time_step * 2 * damp * wn * (gamma / (2 * beta) - 1);
-		step = 1;
+		prev_accel = 0.0;
+		nb_gamma = 0.5;
+		nb_beta = 1.0 / 6.0;
+		a1 = 1 / (nb_beta * pow (time_step, 2)) + (nb_gamma * 2 * damping * wn) / (nb_beta * time_step);
+		a2 = 1 / (nb_beta * time_step) + (nb_gamma / nb_beta - 1) * (2 * damping * wn);
+		a3 = (1 / (2 * nb_beta) - 1) + time_step * 2 * damping * wn * (nb_gamma / (2 * nb_beta) - 1);
+		current_step_number = 1;
 	}
 
 	void
-	NewmarkBetaIntegrator::initialize_input_accel ()
+	NewmarkBetaIntegrator::initialize_input_force (const std::string force_filename)
 	{
-		// Read in the force from file "force70.dat" - it must have dt = time_increment in the constructor!
-		input_accel_values.resize (num_steps + 1, 0.0);
-		std::ifstream force_input_file ("force70lb.dat", std::ifstream::in);
+		// Read in the force from file force_filename - it must have dt = time_increment in the constructor!
+		modal_force_values.resize (num_steps + 1, 0.0);
+		std::ifstream force_input_file (force_filename, std::ifstream::in);
 		double current_value;
 		unsigned int i = 0;
 		while ((!force_input_file.eof ()) && (i != num_steps + 1))
 		{
 			force_input_file >> current_value;
-			input_accel_values[i] = force_scale_factor * current_value;
+			modal_force_values[i] = force_scale_factor * current_value;
 			++i;
 		}
 		force_input_file.close ();
@@ -199,16 +204,16 @@ namespace ModalAnalysis
 	void
 	NewmarkBetaIntegrator::update_step (double &new_disp, double &new_veloc, double &new_accel)
 	{
-		new_disp = (input_accel_values[step] + a1 * prev_disp + a2 * prev_veloc + a3 * prev_accel)
+		new_disp = (modal_force_values[current_step_number] + a1 * prev_disp + a2 * prev_veloc + a3 * prev_accel)
 				/ (pow (wn, 2) + a1);
-		new_veloc = (gamma / (beta * time_step)) * (new_disp - prev_disp)
-				+ (1 - gamma / beta) * prev_veloc + time_step * (1 - gamma / (2 * beta)) * prev_accel;
-		new_accel = 1 / (beta * pow (time_step, 2)) * (new_disp - prev_disp)
-				- (1 / (beta * time_step)) * prev_veloc - (1 / (2 * beta) - 1) * prev_accel;
+		new_veloc = (nb_gamma / (nb_beta * time_step)) * (new_disp - prev_disp)
+				+ (1 - nb_gamma / nb_beta) * prev_veloc + time_step * (1 - nb_gamma / (2 * nb_beta)) * prev_accel;
+		new_accel = 1 / (nb_beta * pow (time_step, 2)) * (new_disp - prev_disp)
+				- (1 / (nb_beta * time_step)) * prev_veloc - (1 / (2 * nb_beta) - 1) * prev_accel;
 		prev_disp = new_disp;
 		prev_veloc = new_veloc;
 		prev_accel = new_accel;
-		++step;
+		++current_step_number;
 	}
 
 	// ********************** EIGENVALUE PROBLEM CLASS **********************
@@ -241,7 +246,7 @@ namespace ModalAnalysis
 			read_Eigen_Restart ();
 			void
 			get_Modal_Acceleration (const unsigned int num_time_steps, const double dt, const double wn,
-															const double gamma, const double force_scale,
+															const double damping, const double force_scale,
 															FullMatrix<double> &modal_displacements,
 															const unsigned int local_mode_number);
 			void
@@ -632,7 +637,7 @@ namespace ModalAnalysis
 				std::vector<std::string> filenames;
 				for (unsigned int i = 0; i < n_mpi_processes; ++i)
 					filenames.push_back (
-							params.transient_output_filename + Utilities::int_to_string (time_step, 4) + "."
+							params.transient_output_filename + "-" + Utilities::int_to_string (time_step, 4) + "."
 									+ Utilities::int_to_string (i, 2) + ".vtu");
 				std::ofstream master_output ((filename + ".pvtu").c_str ());
 				data_out.write_pvtu_record (master_output, filenames);
@@ -704,13 +709,13 @@ namespace ModalAnalysis
 		void
 		EigenvalueProblem<dim>::get_Modal_Acceleration (const unsigned int num_time_steps,
 																										const double dt, const double wn,
-																										const double gamma, const double force_scale,
+																										const double damping, const double force_scale,
 																										FullMatrix<double> &modal_displacements,
 																										const unsigned int local_mode_number)
 		{
 			TimerOutput::Scope t (computing_timer, "get_modal_accel");
 
-			NewmarkBetaIntegrator integrator (num_time_steps, dt, wn, force_scale, gamma);
+			NewmarkBetaIntegrator integrator (num_time_steps, dt, wn, force_scale, damping, params.force_filename);
 			double current_disp, current_veloc, current_accel;
 			for (unsigned int step = 1; step < num_time_steps; ++step)
 			{
@@ -738,7 +743,7 @@ namespace ModalAnalysis
 					/ n_mpi_processes - 1;
 			const unsigned int num_modes_locally_owned = last_mode_locally_owned
 					- first_mode_locally_owned + 1;
-			const double gamma = 0.03;
+			const double damping = 0.03;
 			FullMatrix<double> modal_displacements (num_modes_locally_owned, params.nsteps);
 
 			double wn, modal_force_scale;
@@ -747,7 +752,7 @@ namespace ModalAnalysis
 			{
 				wn = sqrt (std::abs (eigenvalues[first_mode_locally_owned + local_mode_number] + params.shift));
 				modal_force_scale = modal_force_scale_factors[first_mode_locally_owned + local_mode_number];
-				get_Modal_Acceleration (params.nsteps, params.time_step, wn, gamma, modal_force_scale,
+				get_Modal_Acceleration (params.nsteps, params.time_step, wn, damping, modal_force_scale,
 																modal_displacements, local_mode_number);
 			}
 
@@ -788,9 +793,8 @@ namespace ModalAnalysis
 			pcout << "   Finished Computing Modal Displacements." << std::endl << std::endl;
 
 			// Now we step in time and construct the solution vector, which we output at the required frequency
-			const unsigned int nskip = 1000;
 			double current_modal_displacement[1];
-			unsigned int output_step_number = 1;
+			unsigned int output_step_number = 0;
 			for (unsigned int step = 0; step < params.nsteps; step += params.nskip)
 			{
 				current_solution = 0;

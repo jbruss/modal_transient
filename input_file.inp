@@ -2,7 +2,7 @@
 # Author: Jonathan B. Russ
 subsection eigen
   # Number of modes to compute
-  	set nmodes = 8
+  	set nmodes = 12
   # Needs to be a negative shift (important if rigid body modes are present)
   	set shift = -1.0e6
   # Guess at the first system frequency
@@ -19,7 +19,7 @@ subsection transient
   # Sideset to apply the force to
   	set force_sideset = 1
   # Number of time steps (must not be greater than number given in force_filename)
-  	set nsteps = 300000
+  	set nsteps = 100000
   # Output frequency (skip nskip time steps between solution output)
   	set nskip = 1000
   # Time step size
