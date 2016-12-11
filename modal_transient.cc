@@ -904,7 +904,7 @@ main (int argc, char **argv)
 		{
 			deallog.depth_console (0);
 
-			EigenvalueProblem<3> problem ("input_file.inp");
+			EigenvalueProblem<3> problem (argv[1]);
 			problem.run ();
 		}
 	}
