@@ -11,7 +11,6 @@
 #include <deal.II/base/parameter_handler.h>
 #include <deal.II/base/utilities.h>
 #include <deal.II/base/timer.h>
-#include <deal.II/base/utilities.h>
 #include <deal.II/base/conditional_ostream.h>
 #include <deal.II/base/mpi.h>
 #include <deal.II/base/index_set.h>
@@ -48,6 +47,9 @@
 #include <deal.II/lac/slepc_solver.h>
 #include <deal.II/lac/slepc_spectral_transformation.h>
 
+// My Parameters Object
+#include "Parameters.h"
+
 // Standard C++:
 #include <fstream>
 #include <iostream>
@@ -63,73 +65,6 @@
 namespace ModalAnalysis
 {
 	using namespace dealii;
-
-	// ********************** MATERIAL DATA CLASS **********************
-	class MaterialData
-	{
-		std::map<int, double> lambda_values;
-		std::map<int, double> mu_values;
-		std::map<int, double> density_values;
-	public:
-		MaterialData ();
-		double
-		get_lambda (const int mat_id);
-		double
-		get_mu (const int mat_id);
-		double
-		get_density (const int mat_id);
-	};
-
-	MaterialData::MaterialData ()
-	{
-		const double wtmass = 0.00259;
-
-		int block_id = 1;
-		double E = 10.0e6;
-		double nu = 0.33;
-		density_values[block_id] = 0.0979 * wtmass;
-		lambda_values[block_id] = (nu * E) / ((1 + nu) * (1 - 2 * nu));
-		mu_values[block_id] = E / (2 * (1 + nu));
-
-		block_id = 2;
-		E = 52;
-		nu = 0.29;
-		density_values[block_id] = 0.01 * wtmass;
-		lambda_values[block_id] = (nu * E) / ((1 + nu) * (1 - 2 * nu));
-		mu_values[block_id] = E / (2 * (1 + nu));
-
-		block_id = 3;
-		E = 30.0e6;
-		nu = 0.29;
-		density_values[block_id] = 0.284 * wtmass;
-		lambda_values[block_id] = (nu * E) / ((1 + nu) * (1 - 2 * nu));
-		mu_values[block_id] = E / (2 * (1 + nu));
-
-		block_id = 4;
-		E = 30.0e6;
-		nu = 0.29;
-		density_values[block_id] = 1.245 * wtmass;
-		lambda_values[block_id] = (nu * E) / ((1 + nu) * (1 - 2 * nu));
-		mu_values[block_id] = E / (2 * (1 + nu));
-	}
-
-	double
-	MaterialData::get_lambda (const int mat_id)
-	{
-		return lambda_values[mat_id];
-	}
-
-	double
-	MaterialData::get_mu (const int mat_id)
-	{
-		return mu_values[mat_id];
-	}
-
-	double
-	MaterialData::get_density (const int mat_id)
-	{
-		return density_values[mat_id];
-	}
 
 	// ********************** RUNGE KUTTA 4TH ORDER TIME INTEGRATION CLASS **********************
 	class RungeKutta
@@ -328,14 +263,13 @@ namespace ModalAnalysis
 			PETScWrappers::MPI::SparseMatrix mass_matrix;
 			PETScWrappers::MPI::SparseMatrix dynamic_matrix;
 
-			double shift;
 			PETScWrappers::MPI::Vector force_vector, static_solution, current_solution;
 			std::vector<PETScWrappers::MPI::Vector> eigenvectors;
 			std::vector<double> eigenvalues;
 
-			ParameterHandler parameters;
+			Parameters params;
 			ConditionalOStream pcout;
-			MaterialData mat_data;
+
 			TimerOutput computing_timer;
 			ConstraintMatrix constraints;
 		};
@@ -343,40 +277,21 @@ namespace ModalAnalysis
 	// Constructor with input parameter file handling
 	template<int dim>
 		EigenvalueProblem<dim>::EigenvalueProblem (const std::string &prm_file) :
-				triangulation (MPI_COMM_WORLD), mpi_communicator (MPI_COMM_WORLD), fe (FE_Q<dim> (1), dim), dof_handler (
-						triangulation), n_mpi_processes (Utilities::MPI::n_mpi_processes (mpi_communicator)), this_mpi_process (
-						Utilities::MPI::this_mpi_process (mpi_communicator)), pcout (std::cout,
-																																					this_mpi_process == 0), computing_timer (
-						mpi_communicator, pcout, TimerOutput::summary, TimerOutput::wall_times)
+				triangulation (MPI_COMM_WORLD),
+				mpi_communicator (MPI_COMM_WORLD),
+				fe (FE_Q<dim> (1), dim),
+				dof_handler (triangulation),
+				n_mpi_processes (Utilities::MPI::n_mpi_processes (mpi_communicator)),
+				this_mpi_process (Utilities::MPI::this_mpi_process (mpi_communicator)),
+				pcout (std::cout, this_mpi_process == 0),
+				computing_timer (mpi_communicator, pcout, TimerOutput::summary, TimerOutput::wall_times)
 		{
-			parameters.declare_entry ("Number of eigenvalues/eigenvectors", "5",
-																Patterns::Integer (1, 50),
-																"The number of eigenvalues/eigenvectors to compute.");
-			parameters.declare_entry (
-					"Negative Shift", "-1.0", Patterns::Double (-1.0e8, -0.5),
-					"Negative shift value for dynamic matrix in case the object is floating.");
-			parameters.declare_entry ("Shift frequency", "1.0", Patterns::Double (1.0, 1.0e7),
-																"First modal frequency guess for the shift in the eigen-solver.");
-			parameters.declare_entry ("Mass Normalize Eigenvectors", "true", Patterns::Bool (),
-																"Mass normalize eigenvectors or normalize by l_infinity norm.");
-			parameters.declare_entry ("Write Restart", "true", Patterns::Bool (),
-																"Write the eigenvectors to a set of restart files.");
-			parameters.declare_entry ("Fix Boundary", "false", Patterns::Bool (),
-																"Fix boundary at boundary_id specified.");
-			parameters.declare_entry ("Boundary to Fix", "1", Patterns::Integer (1, 1e6),
-																"The sideset to fix. (boundary_id)");
-			parameters.declare_entry ("Run Static Solution", "false", Patterns::Bool (),
-																"Run static solution if boundary is fixed and this is true.");
-			parameters.declare_entry ("Static Force Boundary", "2", Patterns::Integer (1, 1e6),
-																"The sideset to apply the force to. (boundary_id)");
-			parameters.declare_entry ("Static Force Magnitude", "1.0", Patterns::Double (1.0, 1.0e7),
-																"First modal frequency guess for the shift in the eigen-solver.");
-			parameters.read_input (prm_file);
+			// Read in the parameters and print them to the console
+			params.initialize(prm_file);
 			if (this_mpi_process == 0)
 			{
-				parameters.print_parameters (std::cout, ParameterHandler::OutputStyle::Text);
+				params.print_parameters();
 			}
-			shift = parameters.get_double ("Negative Shift");
 		}
 
 	template<int dim>
@@ -386,7 +301,7 @@ namespace ModalAnalysis
 			TimerOutput::Scope t (computing_timer, "setup");
 			GridIn<dim> gridin;
 			gridin.attach_triangulation (triangulation);
-			std::ifstream f ("mesh.inp");
+			std::ifstream f (params.geometry_file);
 			gridin.read_abaqus (f);
 			dof_handler.distribute_dofs (fe);
 
@@ -396,16 +311,15 @@ namespace ModalAnalysis
 					triangulation, triangulation.locally_owned_subdomain ());
 			local_dofs_per_process = dof_handler.n_locally_owned_dofs_per_processor ();
 
-			eigenvectors.resize (parameters.get_integer ("Number of eigenvalues/eigenvectors"));
+			eigenvectors.resize (params.nmodes);
 			for (unsigned int i = 0; i < eigenvectors.size (); ++i)
 				eigenvectors[i].reinit (locally_owned_dofs, mpi_communicator);
 
 			constraints.clear ();
 			constraints.reinit (locally_relevant_dofs);
-			if (parameters.get_bool ("Fix Boundary"))
+			if (params.fix_boundary)
 			{
-				int boundary_id_to_fix = parameters.get_integer ("Boundary to Fix");
-				DoFTools::make_zero_boundary_constraints (dof_handler, boundary_id_to_fix, constraints);
+				DoFTools::make_zero_boundary_constraints (dof_handler, params.sideset_to_fix, constraints);
 			}
 			constraints.close ();
 
@@ -457,9 +371,9 @@ namespace ModalAnalysis
 			{
 				if (cell->is_locally_owned ())
 				{
-					lambda_value = mat_data.get_lambda (cell->material_id ());
-					mu_value = mat_data.get_mu (cell->material_id ());
-					density_value = mat_data.get_density (cell->material_id ());
+					lambda_value = params.get_lambda (cell->material_id ());
+					mu_value = params.get_mu (cell->material_id ());
+					density_value = params.get_density (cell->material_id ());
 
 					fe_values.reinit (cell);
 					cell_stiffness_matrix = 0;
@@ -500,7 +414,7 @@ namespace ModalAnalysis
 						for (unsigned int j = 0; j < dofs_per_cell; ++j)
 						{
 							cell_dynamic_matrix (i, j) = cell_stiffness_matrix (i, j)
-									- shift * cell_mass_matrix (i, j);
+									- params.shift * cell_mass_matrix (i, j);
 						}
 					}
 					constraints.distribute_local_to_global (cell_dynamic_matrix, local_dof_indices,
@@ -549,8 +463,8 @@ namespace ModalAnalysis
 			min_spurious_eigenvalue = Utilities::MPI::min (min_spurious_eigenvalue, mpi_communicator);
 			max_spurious_eigenvalue = Utilities::MPI::max (max_spurious_eigenvalue, mpi_communicator);
 			pcout << "   Spurious frequencies (Hz) are all in the interval " << "["
-					<< sqrt (std::abs (min_spurious_eigenvalue + shift)) / (2 * PI) << ", "
-					<< sqrt (std::abs (max_spurious_eigenvalue + shift)) / (2 * PI) << "]" << std::endl;
+					<< sqrt (std::abs (min_spurious_eigenvalue + params.shift)) / (2 * PI) << ", "
+					<< sqrt (std::abs (max_spurious_eigenvalue + params.shift)) / (2 * PI) << "]" << std::endl;
 		}
 
 	template<int dim>
@@ -565,12 +479,11 @@ namespace ModalAnalysis
 			component_mask.set (1, false);
 			component_mask.set (2, false);
 			std::set<types::boundary_id> bndry_id_set;
-			bndry_id_set.insert (parameters.get_integer ("Static Force Boundary"));
+			bndry_id_set.insert (params.static_force_sideset);
 			DoFTools::extract_boundary_dofs (dof_handler, component_mask, dofs_to_apply_force,
 																				bndry_id_set);
 
-			double static_force = parameters.get_double ("Static Force Magnitude");
-			const double dof_force_value = -1.0 * static_force / dofs_to_apply_force.n_elements ();
+			const double dof_force_value = -1.0 * params.static_force_scale / dofs_to_apply_force.n_elements ();
 			for (auto current_idx = dofs_to_apply_force.begin ();
 					current_idx != dofs_to_apply_force.end (); ++current_idx)
 			{
@@ -608,8 +521,7 @@ namespace ModalAnalysis
 			SolverControl solver_control (2000, 1e-10, false, false);
 			SLEPcWrappers::SolverKrylovSchur eigensolver (solver_control, mpi_communicator);
 
-			double shift_freq = parameters.get_double ("Shift frequency");
-			double eigen_shift = std::pow (2.0 * PI * shift_freq, 2.0);
+			double eigen_shift = std::pow (2.0 * PI * params.shift_frequency, 2.0);
 			SLEPcWrappers::TransformationShiftInvert::AdditionalData additional_data (eigen_shift);
 			SLEPcWrappers::TransformationShiftInvert shift (mpi_communicator, additional_data);
 			shift.set_solver (linear_solver);
@@ -620,8 +532,7 @@ namespace ModalAnalysis
 			eigensolver.solve (dynamic_matrix, mass_matrix, eigenvalues, eigenvectors,
 													eigenvectors.size ());
 
-			bool mass_normalize = parameters.get_bool ("Mass Normalize Eigenvectors");
-			if (mass_normalize)
+			if (params.mass_normalize_modes)
 			{
 				pcout << "   Normalizing eigenvectors with respect to the mass matrix." << std::endl;
 				for (unsigned int i = 0; i < eigenvectors.size (); ++i)
@@ -665,10 +576,8 @@ namespace ModalAnalysis
 			const Vector<double> partitioning (partition_int.begin (), partition_int.end ());
 			data_out.add_data_vector (partitioning, "partitioning");
 
-			const bool perform_static = parameters.get_bool ("Run Static Solution");
-			const bool fix_boundary = parameters.get_bool ("Fix Boundary");
 			Vector<double> static_sol;
-			if (perform_static && fix_boundary)
+			if (params.compute_static_solution && params.fix_boundary)
 			{
 				static_sol.reinit (dof_handler.n_dofs (), false);
 				static_sol = static_solution;
@@ -710,7 +619,7 @@ namespace ModalAnalysis
 																data_component_interpretation);
 			data_out.build_patches ();
 
-			const std::string filename = "transient-" + Utilities::int_to_string (time_step, 4);
+			const std::string filename = params.transient_output_filename + "-" + Utilities::int_to_string (time_step, 4);
 
 			std::ofstream output (
 					(filename + "." + Utilities::int_to_string (this_mpi_process, 2) + ".vtu").c_str ());
@@ -723,7 +632,7 @@ namespace ModalAnalysis
 				std::vector<std::string> filenames;
 				for (unsigned int i = 0; i < n_mpi_processes; ++i)
 					filenames.push_back (
-							"transient-" + Utilities::int_to_string (time_step, 4) + "."
+							params.transient_output_filename + Utilities::int_to_string (time_step, 4) + "."
 									+ Utilities::int_to_string (i, 2) + ".vtu");
 				std::ofstream master_output ((filename + ".pvtu").c_str ());
 				data_out.write_pvtu_record (master_output, filenames);
@@ -829,18 +738,16 @@ namespace ModalAnalysis
 					/ n_mpi_processes - 1;
 			const unsigned int num_modes_locally_owned = last_mode_locally_owned
 					- first_mode_locally_owned + 1;
-			const unsigned int num_time_steps = 3e5;
-			const double dt = 1.0e-6;
 			const double gamma = 0.03;
-			FullMatrix<double> modal_displacements (num_modes_locally_owned, num_time_steps);
+			FullMatrix<double> modal_displacements (num_modes_locally_owned, params.nsteps);
 
 			double wn, modal_force_scale;
 			for (unsigned int local_mode_number = 0; local_mode_number < num_modes_locally_owned;
 					++local_mode_number)
 			{
-				wn = sqrt (std::abs (eigenvalues[first_mode_locally_owned + local_mode_number] + shift));
+				wn = sqrt (std::abs (eigenvalues[first_mode_locally_owned + local_mode_number] + params.shift));
 				modal_force_scale = modal_force_scale_factors[first_mode_locally_owned + local_mode_number];
-				get_Modal_Acceleration (num_time_steps, dt, wn, gamma, modal_force_scale,
+				get_Modal_Acceleration (params.nsteps, params.time_step, wn, gamma, modal_force_scale,
 																modal_displacements, local_mode_number);
 			}
 
@@ -869,9 +776,9 @@ namespace ModalAnalysis
 				std::ofstream matrix_output (modal_disp_file_name, std::ofstream::out);
 				for (unsigned int mode_number = 0; mode_number < num_modes_locally_owned; ++mode_number)
 				{
-					for (unsigned int time_step = 0; time_step < num_time_steps; ++time_step)
+					for (unsigned int step = 0; step < params.nsteps; ++step)
 					{
-						matrix_output << modal_displacements[mode_number][time_step] << " ";
+						matrix_output << modal_displacements[mode_number][step] << " ";
 					}
 					matrix_output << std::endl;
 				}
@@ -884,7 +791,7 @@ namespace ModalAnalysis
 			const unsigned int nskip = 1000;
 			double current_modal_displacement[1];
 			unsigned int output_step_number = 1;
-			for (unsigned int step = 0; step < num_time_steps; step += nskip)
+			for (unsigned int step = 0; step < params.nsteps; step += params.nskip)
 			{
 				current_solution = 0;
 				for (unsigned int mode_number = 0; mode_number < total_number_of_modes; ++mode_number)
@@ -919,15 +826,11 @@ namespace ModalAnalysis
 			pcout << "   Number of active cells:       " << triangulation.n_active_cells () << std::endl
 					<< "   Number of degrees of freedom: " << dof_handler.n_dofs () << std::endl;
 
-			const bool write_restart = parameters.get_bool ("Write Restart");
-			const bool perform_static = parameters.get_bool ("Run Static Solution");
-			const bool fix_boundary = parameters.get_bool ("Fix Boundary");
-
 			// Assemble the system of equations (the global matrices)
 			assemble_system ();
 
 			// Either solve the Eigenvalue problem again or read in previously computed eigenpairs
-			if (write_restart)
+			if (params.write_restart)
 			{
 				unsigned int n_iterations = solve_eigen_parallel ();
 				pcout << "   Eigensolver converged in " << n_iterations << " iterations." << std::endl;
@@ -947,14 +850,14 @@ namespace ModalAnalysis
 				for (unsigned int i = 0; i < eigenvalues.size (); ++i)
 				{
 					printf ("   Mode %d Frequency : %0.3f Hz\n", i + 1,
-									sqrt (std::abs (eigenvalues[i] + shift)) / (2 * PI));
+									sqrt (std::abs (eigenvalues[i] + params.shift)) / (2 * PI));
 				}
 				std::cout << std::endl;
 			}
 
 			// If the user requested a static solution and specified a boundary to fix
 			// (required for a unique solution) then run the static solve.
-			if (perform_static && fix_boundary)
+			if (params.compute_static_solution && params.fix_boundary)
 			{
 				unsigned int n_iterations = solve_static ();
 				pcout << "   Static Solver converged in " << n_iterations << " iterations." << std::endl;
@@ -969,7 +872,7 @@ namespace ModalAnalysis
 			stiffness_matrix.clear ();
 
 			// If we didn't perform a static solution then we need to assemble the force vector
-			if (!perform_static)
+			if (!params.compute_static_solution)
 			{
 				assemble_force_vector ();
 			}
@@ -1001,7 +904,7 @@ main (int argc, char **argv)
 		{
 			deallog.depth_console (0);
 
-			EigenvalueProblem<3> problem ("parameters.prm");
+			EigenvalueProblem<3> problem ("input_file.inp");
 			problem.run ();
 		}
 	}

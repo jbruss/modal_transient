@@ -1,5 +1,5 @@
 ##
-#  CMake script for the step-36 tutorial program:
+#  CMake script for the modal_transient program
 ##
 
 # Set the name of the project and target:
@@ -17,6 +17,7 @@ SET(TARGET "modal_transient")
 # page of the documentation.
 SET(TARGET_SRC
   ${TARGET}.cc
+  Parameters.cpp
   )
 
 # Usually, you will not need to modify anything beyond this point...

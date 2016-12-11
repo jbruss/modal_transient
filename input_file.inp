@@ -1,0 +1,82 @@
+# Input File for Compression Pad Model
+# Author: Jonathan B. Russ
+subsection eigen
+  # Number of modes to compute
+  	set nmodes = 8
+  # Needs to be a negative shift (important if rigid body modes are present)
+  	set shift = -1.0e6
+  # Guess at the first system frequency
+  	set shift_frequency = 0
+  # If false, normalize modes by l_infinity norm
+  	set Mass Normalize Modes = true
+  # Run the eigen solution and output the restart files
+  	set Write Restart = true
+end
+
+subsection transient
+  # Filename that contains the force time history
+  	set force_filename = force70lb.dat
+  # Sideset to apply the force to
+  	set force_sideset = 1
+  # Number of time steps (must not be greater than number given in force_filename)
+  	set nsteps = 300000
+  # Output frequency (skip nskip time steps between solution output)
+  	set nskip = 1000
+  # Time step size
+  	set time_step = 1e-6
+  # Root of the output file name for the transient run
+  	set output_filename = transient
+end
+
+subsection statics
+  # State whether to perform the static solution
+  # 	(the boundary must also be fixed for a unique solution)
+  	set compute_static_solution = false
+  # Sideset to apply the force to
+  	set force_sideset = 2
+  # Scale factor for the force
+  	set force_scale = 1
+  # Root of the output file name for the static run
+  	set output_filename = static
+end
+
+subsection file
+  set geometry_file = mesh.inp
+end
+
+subsection parameters
+  set wtmass = 0.00259
+end
+
+subsection boundary
+  set fix_boundary = false
+  set sideset_to_fix  = 1
+end
+
+# Aluminum Outer Plates
+subsection Block 1
+  set E = 10.0e6
+  set nu = 0.33
+  set density = 0.0979
+end
+
+# Compression Pads
+subsection Block 2
+  set E = 52
+  set nu = 0.29
+  set density = 0.01
+end
+
+# Steel Block
+subsection Block 3
+  set E = 30.0e6
+  set nu = 0.29
+  set density = 0.284
+end
+
+# Steel Spacers and Bolts
+subsection Block 4
+  set E = 30.0e6
+  set nu = 0.29
+  set density = 1.245
+end
