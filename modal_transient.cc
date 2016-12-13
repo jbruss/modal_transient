@@ -237,7 +237,9 @@ namespace ModalAnalysis
 			unsigned int
 			solve_eigen_parallel ();
 			void
-			output_modes_partition_static_solution () const;
+			output_modes_and_partition () const;
+			void
+			output_static_solution () const;
 			void
 			output_time_step_solution (const unsigned int time_step);
 			void
@@ -284,7 +286,7 @@ namespace ModalAnalysis
 		EigenvalueProblem<dim>::EigenvalueProblem (const std::string &prm_file) :
 				triangulation (MPI_COMM_WORLD),
 				mpi_communicator (MPI_COMM_WORLD),
-				fe (FE_Q<dim> (1), dim),
+				fe (FE_Q<dim> (2), dim),
 				dof_handler (triangulation),
 				n_mpi_processes (Utilities::MPI::n_mpi_processes (mpi_communicator)),
 				this_mpi_process (Utilities::MPI::this_mpi_process (mpi_communicator)),
@@ -557,7 +559,7 @@ namespace ModalAnalysis
 
 	template<int dim>
 		void
-		EigenvalueProblem<dim>::output_modes_partition_static_solution () const
+		EigenvalueProblem<dim>::output_modes_and_partition () const
 		{
 			std::vector<DataComponentInterpretation::DataComponentInterpretation> data_component_interpretation (
 					dim, DataComponentInterpretation::component_is_part_of_vector);
@@ -581,17 +583,8 @@ namespace ModalAnalysis
 			const Vector<double> partitioning (partition_int.begin (), partition_int.end ());
 			data_out.add_data_vector (partitioning, "partitioning");
 
-			Vector<double> static_sol;
-			if (params.compute_static_solution && params.fix_boundary)
-			{
-				static_sol.reinit (dof_handler.n_dofs (), false);
-				static_sol = static_solution;
-				data_out.add_data_vector (static_sol, "static_solution", DataOut<dim>::type_dof_data,
-																	data_component_interpretation);
-			}
-
 			data_out.build_patches ();
-			const std::string filename = ("output-" + Utilities::int_to_string (this_mpi_process, 1)
+			const std::string filename = ("eigen-" + Utilities::int_to_string (this_mpi_process, 1)
 					+ ".vtu");
 			std::ofstream output (filename.c_str ());
 			data_out.write_vtu (output);
@@ -600,8 +593,40 @@ namespace ModalAnalysis
 			{
 				std::vector<std::string> filenames;
 				for (unsigned int i = 0; i < n_mpi_processes; ++i)
-					filenames.push_back ("output-" + Utilities::int_to_string (i, 1) + ".vtu");
-				std::ofstream master_output ("output_main.pvtu");
+					filenames.push_back ("eigen-" + Utilities::int_to_string (i, 1) + ".vtu");
+				std::ofstream master_output ("eigen_main.pvtu");
+				data_out.write_pvtu_record (master_output, filenames);
+			}
+		}
+
+	template<int dim>
+		void
+		EigenvalueProblem<dim>::output_static_solution () const
+		{
+			std::vector<DataComponentInterpretation::DataComponentInterpretation> data_component_interpretation (
+					dim, DataComponentInterpretation::component_is_part_of_vector);
+
+			DataOut<dim> data_out;
+			data_out.attach_dof_handler (dof_handler);
+
+			Vector<double> static_sol;
+			static_sol.reinit (dof_handler.n_dofs (), false);
+			static_sol = static_solution;
+			data_out.add_data_vector (static_sol, "static_solution", DataOut<dim>::type_dof_data,
+																data_component_interpretation);
+
+			data_out.build_patches ();
+			const std::string filename = (params.statics_output_filename + "-" + Utilities::int_to_string (this_mpi_process, 1)
+					+ ".vtu");
+			std::ofstream output (filename.c_str ());
+			data_out.write_vtu (output);
+
+			if (this_mpi_process == 0)
+			{
+				std::vector<std::string> filenames;
+				for (unsigned int i = 0; i < n_mpi_processes; ++i)
+					filenames.push_back (params.statics_output_filename + "-" + Utilities::int_to_string (i, 1) + ".vtu");
+				std::ofstream master_output (params.statics_output_filename + "_main.pvtu");
 				data_out.write_pvtu_record (master_output, filenames);
 			}
 		}
@@ -752,7 +777,7 @@ namespace ModalAnalysis
 			{
 				wn = sqrt (std::abs (eigenvalues[first_mode_locally_owned + local_mode_number] + params.shift));
 				modal_force_scale = modal_force_scale_factors[first_mode_locally_owned + local_mode_number];
-				get_Modal_Acceleration (params.nsteps, params.time_step, wn, damping, modal_force_scale,
+				get_Modal_Acceleration (params.nsteps, params.time_step, wn, damping, modal_force_scale / params.static_force_scale,
 																modal_displacements, local_mode_number);
 			}
 
@@ -865,10 +890,11 @@ namespace ModalAnalysis
 			{
 				unsigned int n_iterations = solve_static ();
 				pcout << "   Static Solver converged in " << n_iterations << " iterations." << std::endl;
+				output_static_solution();
 			}
 
 			// Output the mode shapes, partition, and static solution (if computed) to a file
-			output_modes_partition_static_solution ();
+			output_modes_and_partition ();
 
 			// Clear the dynamic, mass, and stiffness matrices from memory
 			dynamic_matrix.clear ();
